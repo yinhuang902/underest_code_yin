@@ -1,0 +1,16 @@
+name: research-env
+channels:
+  - conda-forge
+  - gurobi
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - matplotlib
+  - jupyter
+  - pyomo
+  - ipopt
+  - gurobi
+  - pip
+  - pip:
+      - notebook

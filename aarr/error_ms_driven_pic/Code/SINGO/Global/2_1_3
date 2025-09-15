@@ -1,0 +1,50 @@
+push!(LOAD_PATH, ENV["SINGODIR"])
+using Plasmo, Ipopt,BARON,SCIP
+using JuMP
+include("../bb.jl")
+
+
+function createModel()
+    m=Model(solver=IpoptSolver())
+    @variable(m, 0<= x1 <= 1, start=1)
+    @variable(m, 0<= x2 <= 1, start=1)
+    @variable(m, 0<= x3 <= 1, start=1)
+    @variable(m, 0<= x4 <= 1, start=1)
+    @variable(m, 0<= x5 <= 1, start=1)
+    @variable(m, 0<= x6 <= 1, start=1)
+    @variable(m, 0<= x7 <= 1, start=1)
+    @variable(m, 0<= x8 <= 1, start=1)
+    @variable(m, 0<= x9 <= 1, start=1)
+    @variable(m, x10 >= 0, start=3)
+    @variable(m, x11 >= 0, start=3)
+    @variable(m, x12 >= 0, start=3)
+    @variable(m, 0<= x13 <= 1, start=1)
+    @constraint(m, 2*x1 + 2*x2 + x10 + x11 <= 10)
+    @constraint(m, 2*x1 + 2*x3 + x10 + x12 <= 10)
+    @constraint(m, 2*x2 + 2*x3 + x11 + x12 <= 10)
+    @constraint(m, -8*x1 + x10 <= 0)
+    @constraint(m, -8*x2 + x11 <= 0)
+    @constraint(m, -8*x3 + x12 <= 0)
+    @constraint(m, -2*x4 - x5 + x10 <= 0)
+    @constraint(m, -2*x6 - x7 + x11 <= 0)
+    @constraint(m, -2*x8 - x9 + x12 <= 0)
+    @objective(m, Min, 5*x1 - 0.5*(10*x1*x1 + 10*x2*x2 + 10*x3*x3 + 10*x4*x4) + 5*x2 + 5*x3 + 5*x4 - x5 - x6 - x7 - x8 - x9 - x10 - x11 - x12 - x13)
+    return m
+end
+
+
+P = RandomStochasticModel(createModel, 1000, 2, 2)  #RandomStochasticModel(createModel, nscen=10, nfirst=5, nparam=5)
+m = copyStoModel(P)
+branch_bound(m)
+
+
+m= extensiveSimplifiedModel(P)
+m.solver = SCIPSolver("limits/gap", mingap, "limits/absgap", mingap, "limits/time", 43200.0)
+solve(m)
+
+
+m= extensiveSimplifiedModel(m)
+m = copyNLModel(m)
+m.solver = BaronSolver()
+push!(m.solver.options, (:EpsA, mingap), (:EpsR, mingap),(:MaxTime, 43200.0))
+solve(m)

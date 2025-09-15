@@ -1,0 +1,31 @@
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/Plasmo.jl/src/Plasmo.jl:16
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/Plasmo.jl/src/Plasmo.jl:16
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/Plasmo.jl/src/Plasmo.jl:55
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/Plasmo.jl/src/Plasmo.jl:66
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:127
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:127
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:127
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:127
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:133
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:133
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:148
+WARNING: Base.String is deprecated, use AbstractString instead.
+  likely near /home/cao27/SINGO/PID12/pidnonlinear.jl:148
+
+******************************************************************************
+This program contains Ipopt, a library for large-scale nonlinear optimization.
+ Ipopt is released as open source code under the Eclipse Public License (EPL).
+         For more information visit http://projects.coin-or.org/Ipopt
+******************************************************************************
+

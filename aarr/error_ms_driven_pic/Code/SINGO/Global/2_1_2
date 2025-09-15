@@ -1,0 +1,35 @@
+push!(LOAD_PATH, ENV["SINGODIR"])
+using Plasmo, Ipopt,BARON,SCIP
+using JuMP
+include("../bb.jl")
+
+function createModel()
+    m=Model()
+    @variable(m, 0<= x1 <= 1)
+    @variable(m, 0<= x2 <= 1, start=1)
+    @variable(m, 0<= x3 <= 1)
+    @variable(m, 0<= x4 <= 1, start=1)
+    @variable(m, 0<= x5 <= 1, start=1)
+    @variable(m, x6 >= 0, start=20)
+    @constraint(m, 6*x1 + 3*x2 + 3*x3 + 2*x4 + x5 <= 6.5)
+    @constraint(m, 10*x1 + 10*x3 + x6 <= 20)
+    @objective(m, Min, -0.5*(x1*x1 + x2*x2 + x3*x3 + x4*x4 + x5*x5) - 10.5*x1 - 7.5*x2 - 3.5*x3 - 2.5*x4 - 1.5*x5 - 10*x6)
+    return m
+end
+
+P = RandomStochasticModel(createModel, 1000, 2, 2)  #RandomStochasticModel(createModel, nscen=10, nfirst=5, nparam=5)
+m = copyStoModel(P)
+branch_bound(m)
+
+
+m= extensiveSimplifiedModel(P)
+m.solver = SCIPSolver("limits/gap", mingap, "limits/absgap", mingap, "limits/time", 43200.0)
+solve(m)
+
+
+m= extensiveSimplifiedModel(P)
+m = copyNLModel(m)
+m.solver = BaronSolver()
+push!(m.solver.options, (:EpsA, mingap), (:EpsR, mingap),(:MaxTime, 43200.0))
+solve(m)
+
