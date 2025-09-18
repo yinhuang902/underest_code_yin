@@ -1,0 +1,32 @@
+name: rl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - jupyter
+  - notebook
+  - ipykernel
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - swig           # 供 Box2D/其他扩展用（conda 预编译）
+  - box2d-py       # 用 conda 安装，避免 pip 编译失败
+  - ffmpeg         # 让 moviepy 能导出视频
+  - psutil
+  - pillow
+  - pip:
+      - gymnasium            # 不再用 [box2d] 扩展，由上面 conda 提供
+      - stable-baselines3[extra]
+      - torch
+      - tensorboard
+      - tqdm
+      - moviepy
+      - opencv-python
+      - imageio
+      - pettingzoo
+      - supersuit
+      - pygame
