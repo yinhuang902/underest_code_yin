@@ -1,0 +1,36 @@
+name: snoglode
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  # --- Sci/plot stack (conda 负责，避免与 pip 冲突) ---
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - networkx
+  - psutil
+  # --- Pyomo & MPI（如需并行） ---
+  - pyomo
+  - mpich
+  - mpi4py
+  # 可选：若你不需要 MPI，可删除上面两行 mpich / mpi4py
+  # --- pip-only / 项目特有 ---
+  - pip:
+      - gurobipy==11.0.0
+      - idaes-pse==2.7.0
+      - snoglode==1.0.0
+      - deepdiff==6.7.1
+      - flexcache==0.3
+      - flexparser==0.4
+      - ordered-set==4.1.0
+      - ply==3.11
+      # 下面这些通常无需固定版本；如需可自行添加：
+      # - pytest
+      # - sympy
+      # - pint
+      # - sortedcontainers
