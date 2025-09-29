@@ -1,0 +1,46 @@
+name: snoglode-win
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # ---- 基础 Python 与常用科学栈 ----
+  - python=3.11
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - ipykernel
+  - jupyterlab
+  - tqdm
+  - networkx
+  - sympy
+  - psutil
+  - pyomo
+  - zeromq
+  - pyzmq
+  - tornado
+  - traitlets
+  - typing_extensions
+  - setuptools
+  - wheel
+  - openssl
+  - ca-certificates
+
+  # ---- 可选：MILP 求解器（CBC）----
+  # 如果没有商用 MILP 求解器，可装这个；有 Gurobi 可保留也无冲突
+  - coincbc
+
+  # ---- 可选：MPI（Windows 用 Microsoft MPI）----
+  # 如果你暂时不跑并行，把下面两行直接删掉即可更稳
+  - msmpi
+  - mpi4py
+
+  # ---- 警告：Ipopt 在 Win 上易冲突，建议走 IDAES 扩展安装（见下）----
+  # - ipopt   # 如果这里报错，请注释掉这一行，改走 idaes get-extensions
+
+  # ---- pip 包 ----
+  - pip:
+      - idaes-pse==2.7.0
+      - gurobipy==11.0.0
+      #- snoglode==1.0.0

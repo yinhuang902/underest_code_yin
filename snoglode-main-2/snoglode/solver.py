@@ -9,7 +9,8 @@ from snoglode.components.node import Node
 from snoglode.bounders.upper_bounders import UpperBounder
 from snoglode.utils.ef import ExtensiveForm
 
-from snoglode.utils.plotter import PlotScraper
+from .utils.plotter import PlotScraper
+
 from snoglode.utils.solve_stats import SNoGloDeSolutionInformation
 from snoglode.utils.logging import IterLogger, MockIterLogger
 
