@@ -1,0 +1,46 @@
+name: rl-research
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - networkx
+  - swig          # box2d 需要
+  - pip:
+      # ==== 核心 RL ====
+      - gymnasium[classic-control,atari,box2d]==1.2.1
+      - stable-baselines3[extra]==2.7.0
+      - sb3-contrib==2.7.0
+      - torch==2.8.0
+      - tensorboard
+      - torchviz
+      - qgym[tutorial]==0.3.1
+
+      # ==== 多智能体 RL ====
+      - pettingzoo==1.25.0
+      - supersuit==3.10.0
+
+      # ==== 其他环境 ====
+      - mujoco==3.3.6
+      - minigrid==3.0.0
+      - ale-py==0.11.2
+      - opencv-python
+
+      # ==== 分布式 RL (Ray RLlib) ====
+      - ray[rllib]==2.44.0
+      - pyarrow>=14,<22
+
+      # ==== 工具 ====
+      - moviepy==2.2.1
+      - tqdm==4.67.1
+      - rich==14.1.0
+
+

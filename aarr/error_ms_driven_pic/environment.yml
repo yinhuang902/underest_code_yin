@@ -1,4 +1,4 @@
-name: research-env
+name: normal-ress-env
 channels:
   - conda-forge
   - gurobi

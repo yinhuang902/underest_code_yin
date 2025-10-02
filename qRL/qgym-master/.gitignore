@@ -1,0 +1,31 @@
+# Jetbrains
+/.idea/
+
+# venvs
+/venv*/
+
+# Python
+/build/
+/dist/
+/*.egg-info/
+**/__pycache__/
+*.whl
+
+# Jupyter
+**/.ipynb_checkpoints/
+
+# Pytest
+**/.pytest_cache/
+.coverage
+
+# Sphinx
+/docs_build/
+/docs/
+
+# Data/pictures
+/images/
+/openql_output/
+*.zip
+
+#vscode
+.vscode/
