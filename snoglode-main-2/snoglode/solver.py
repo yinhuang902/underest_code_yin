@@ -254,6 +254,13 @@ class Solver():
                                                 full_solution = self.subproblems.save_results_to_dict(),
                                                 iteration = self.iteration,
                                                 relative_gap = self.tree.metrics.relative_gap)
+            
+            # print full solution
+            print('here is full solution')
+            d = self.subproblems.save_results_to_dict()
+            for k, v in d.items():
+                print(f"{k}: {v}")
+
         return bnb_result
     
 
