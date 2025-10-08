@@ -1,0 +1,24 @@
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+dependencies = [
+  "numpy",
+  "pyomo>=6.6.2",
+]
+
+name = "snoglode"
+version = "1.1.0"
+authors = [
+  { name="Georgia Stinchfield", email="gstinchf@andrew.cmu.edu" },
+]
+description = "SNoGloDe: Structured Nonlinear Global Decomposition Solver"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+Homepage = "https://github.com/gcstinchfield/snoglode"
+Issues = "https://github.com/gcstinchfield/snoglode/issues"
