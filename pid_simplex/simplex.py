@@ -13,6 +13,25 @@ from utils import (
 
 # ------------------------- Single tetra & scene: ms solve (persistent) -------------------------
 def ms_on_tetra_for_scene(ms_bundle, tet_vertices, fverts_scene):
+    """
+    Solve ms for a single simplex(tetrahedron) in one scenario.
+
+    Args:
+        ms_bundle: Persistent model/bundle for the given scenario.
+        tet_vertices (list[tuple[float]]): The 4 vertex coordinates of the tetrahedron.
+        fverts_scene (list[float]): Objective function values at those vertices for this scenario.
+
+    Returns:
+        tuple:
+            ms_val (float): The computed minimum-subproblem value (∞ if solve failed).
+            lam_star (array-like | None): The optimal barycentric weights (if available).
+            new_pt (array-like | None): The candidate new point generated from the ms solution.
+
+    Notes:
+        This function updates the scenario-specific bundle with the current tetrahedron
+        data, solves it, and extracts the ms value and new candidate point.
+    """
+
     ms_bundle.update_tetra(tet_vertices, fverts_scene)
     ok = ms_bundle.solve()
     if not ok:
@@ -24,24 +43,43 @@ def ms_on_tetra_for_scene(ms_bundle, tet_vertices, fverts_scene):
 def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
                        ms_cache=None, cache_on=True, tracker=None):
     """
-    Returns:
-        per_tet[k]: a dictionary containing:
-            - ms_per_scene: list of length S
-                ms values for each scene.
-            - xms_per_scene: list of length S
-                first stage variable (Kp, Ki, Kd) for the corresponding ms for each scene.
-            - x_ms_best_scene:
-                first stage variable (Kp, Ki, Kd) for the corresponding best ms.
-            - best_scene:
-                index of the best scene(minimum ms)
+    Evaluate all Delaunay simplex formed by the node set
+    across all scenarios, computing their ms values,
+    lower/upper bounds, and candidate points.
 
-    Notes:
-        ms_cache (dict, optional):
-            A cache dictionary with keys of the form
-            (scene_idx, tuple(sorted(vert_idx))),
-            and values as (ms_val, new_point).
-        cache_on (bool):
-            Whether to enable caching to avoid redundant evaluations.
+    For each simplex(tetrahedron):
+        - It gathers objective values at the four vertices for each scenario.
+        - Solves the ms subproblem per scenario (with caching to skip repeats).
+        - Aggregates per-scene ms values into a single ms (via MS_AGG).
+        - Computes LB/UB and identifies the best scene and candidate point.
+
+    Parameters
+    ----------
+    nodes : list[tuple[float]]
+        Current first-stage points (Kp, Ki, Kd, ...).
+    scen_values : list[list[float]]
+        Cached Q evaluations for each scenario ω at each node i.
+        Shape: [S][N].
+    ms_bundles : list[MSBundle]
+        Scenario-specific persistent ms solvers.
+
+
+    first_vars_list : list[list[pyo.Var]]
+        Corresponding first-stage Pyomo variables for each scenario.
+    ms_cache : dict, optional
+        Cache {(scene_idx, sorted(vert_idx)) -> (ms_val, new_point)}.
+    cache_on : bool, default=True
+        Whether to use and update ms_cache.
+    tracker : SimplexTracker, optional
+        Records bookkeeping events (created simplex, ms recomputed, etc.).
+
+    Returns
+    -------
+    tri : scipy.spatial.Delaunay
+        The Delaunay triangulation of current nodes.
+    per_tet : list[dict]
+        List of simplex records containing vertices, ms results,
+        LB/UB values, best scene, candidate point, and volume.
     """
     pts = np.asarray(nodes, dtype=float)
     if len(pts) < 4:
@@ -64,11 +102,10 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
         if vol < vol_tol:
             continue
 
-        # —— 这里新增：用顶点索引的有序元组作为单形唯一 id
+        # Use the ordered tuple of vertex index as the unique ID of the simplex
         simplex_id = tuple(sorted(idxs))
         if tracker is not None:
             tracker.note_created(simplex_id)
-
 
         fverts_per_scene = [[scen_values[ω][i] for i in idxs] for ω in range(S)]
         fverts_sum = [sum(fverts_per_scene[ω][j] for ω in range(S)) for j in range(4)]
@@ -88,7 +125,6 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
                 )
                 if cache_on and (ms_cache is not None):
                     ms_cache[cache_key] = (ms_val, new_pt)
-                # —— 这里新增：只有真正重算时才统计
                 if tracker is not None:
                     tracker.note_ms_recomputed(simplex_id)
 
@@ -130,18 +166,53 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
 def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                        target_nodes=30, min_dist=MIN_DIST, active_tol=ACTIVE_TOL, verbose=True,
                        agg_bundle=None, gap_stop_tol=GAP_STOP_TOL, tracker: SimplexTracker | None = None):
-    
+    """
+    Starting from the 8 corner nodes, in each iteration:
+        - Compute global UB from current nodes (sum over scenarios)
+        - Evaluate all simplex(tetrahedra) by evaluate_all_tetra
+        - Identify active simplices near the current UB.
+        - Determine global LB = UB + ms_b (from best active simplex).
+        - Select a new candidate node minimizing ms, subject to min_dist.
+        - Update scenario evaluations, nodes, and gap.
+        - Stop when UB − LB ≤ gap_stop_tol or candidate collision occurs.
+
+    * if you see verbose, ignore it, it just prints more things...
+
+    Parameters
+    ----------
+    base_bundles : list[BaseBundle]
+        Scenario-specific models for true Q evaluation.
+    ms_bundles : list[MSBundle]
+        Scenario-specific persistent solvers for ms subproblems.
+    model_list : list[pyo.ConcreteModel]
+        Original Pyomo models (one per scenario).
+    first_vars_list : list[list[pyo.Var]]
+        First-stage variable lists for each scenario.
+    target_nodes : int, 
+        Maximum number of nodes to generate.
+    min_dist : float, 
+        Minimum allowed distance between nodes.
+    active_tol : float, 
+        Relaxation tolerance for active simplex filtering.
+    verbose : bool, default=True
+        Whether to print iteration details.
+    agg_bundle : 
+        Reserved for aggregated ms solving.
+    gap_stop_tol : float, 
+        Convergence threshold for optimal gap.
+    tracker : SimplexTracker, 
+        Tracks created/active simplices and ms recomputations.
+
+    Returns
+    -------
+    dict
+        History and results including nodes, LB/UB/MS traces,
+        added nodes, and active simplex ratios.
+    """
+
     if tracker is None:
         tracker = SimplexTracker()
 
-    """
-    Current implementation:
-        Uses only the single-scenario ms (i.e., ms_bundles).
-        For each active simplex that contains an upper-bound (UB) node,
-        candidate points are generated separately for each scenario.
-        Among all (simplex x scenario) candidates, the one with the smallest
-        ms value is selected as the next node.
-    """
     global LAST_DEBUG
     LB_hist, UB_hist, ms_hist, node_count = [], [], [], []
     UB_node_hist, add_node_hist = [], []
@@ -214,7 +285,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         active_vol = sum(r["volume"] for r in per_tet if active_mask[r["simplex_index"]])
         active_ratio = active_vol / total_vol if total_vol > 0 else 0.0
 
-        # —— 新增：统计 active / active+UB
+        # collect statistics of active simplices (active / active+UB)
         for r in per_tet:
             is_active = active_mask.get(r["simplex_index"], False)
             if not is_active:
@@ -223,7 +294,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             has_ub = (ub_idx in r["vert_idx"])
             tracker.note_active(simplex_id, has_ub=has_ub)
 
-        # —— 新增：本轮统计打印（之后即便早退，本轮统计也已输出）
+        # print iteration statistics immediately
         tracker.end_iter()
 
 
