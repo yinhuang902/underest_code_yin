@@ -10,38 +10,22 @@ from utils import (
     corners_from_var_bounds, evaluate_Q_at, tet_quality, min_dist_to_nodes,
     _print_candidates_table, plot_iteration_plotly, LAST_DEBUG
 )
+from bundles import ms_on_tetra_for_scene, qmin_on_tetra_for_scene
 
-# ------------------------- Single tetra & scene: ms solve (persistent) -------------------------
-def ms_on_tetra_for_scene(ms_bundle, tet_vertices, fverts_scene):
-    ms_bundle.update_tetra(tet_vertices, fverts_scene)
-    ok = ms_bundle.solve()
-    if not ok:
-        return float('inf'), None, None
-    ms_val, lam_star, new_pt = ms_bundle.get_ms_and_point()
-    return ms_val, lam_star, new_pt
 
 # ------------------------- Evaluate all tetrahedra (per-scene) -------------------------
-def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
+def evaluate_all_tetra(nodes, scen_values, ms_bundles, qmin_bundles, first_vars_list,
                        ms_cache=None, cache_on=True, tracker=None):
     """
-    Returns:
-        per_tet[k]: a dictionary containing:
-            - ms_per_scene: list of length S
-                ms values for each scene.
-            - xms_per_scene: list of length S
-                first stage variable (Kp, Ki, Kd) for the corresponding ms for each scene.
-            - x_ms_best_scene:
-                first stage variable (Kp, Ki, Kd) for the corresponding best ms.
-            - best_scene:
-                index of the best scene(minimum ms)
-
-    Notes:
-        ms_cache (dict, optional):
-            A cache dictionary with keys of the form
-            (scene_idx, tuple(sorted(vert_idx))),
-            and values as (ms_val, new_point).
-        cache_on (bool):
-            Whether to enable caching to avoid redundant evaluations.
+    计算每个单形在每个场景下的 ms 与 true-Q 最小值，并构建新口径下界：
+        LB_old[s]  = min(f_verts_s) + ms_s
+        LB_true[s] = max(LB_old[s], qmin_true_s)
+        LB (agg)   = sum/mean(LB_true[s] over scenes)
+    返回 per_tet 列表，每项包含：
+        - ms_per_scene, xms_per_scene
+        - qmin_true_scene
+        - LB_true_scene, LB (聚合)
+        - 其他几何/索引信息
     """
     pts = np.asarray(nodes, dtype=float)
     if len(pts) < 4:
@@ -64,38 +48,51 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
         if vol < vol_tol:
             continue
 
-        # —— 这里新增：用顶点索引的有序元组作为单形唯一 id
         simplex_id = tuple(sorted(idxs))
         if tracker is not None:
             tracker.note_created(simplex_id)
 
-
+        # per-vertex true values for each scene
         fverts_per_scene = [[scen_values[ω][i] for i in idxs] for ω in range(S)]
         fverts_sum = [sum(fverts_per_scene[ω][j] for ω in range(S)) for j in range(4)]
 
-        # ==========  per-scene ms solve with cache ==========
-        key_base = tuple(sorted(idxs))
-        ms_scene = []
-        xms_scene = []
+        # ===== per-scene ms + qmin_true (with cache) =====
+        ms_scene, xms_scene = [], []
+        qmin_scene = []
+
+        key_base = simplex_id
+
         for ω in range(S):
-            cache_key = (int(ω), key_base)
-            hit = (cache_on and (ms_cache is not None) and (cache_key in ms_cache))
-            if hit:
-                ms_val, new_pt = ms_cache[cache_key]
+            # ---- ms ----
+            key_ms = ("ms", int(ω), key_base)
+            hit_ms = cache_on and (ms_cache is not None) and (key_ms in ms_cache)
+            if hit_ms:
+                ms_val, new_pt = ms_cache[key_ms]
             else:
                 ms_val, lam_star, new_pt = ms_on_tetra_for_scene(
                     ms_bundles[ω], verts, fverts_per_scene[ω]
                 )
                 if cache_on and (ms_cache is not None):
-                    ms_cache[cache_key] = (ms_val, new_pt)
-                # —— 这里新增：只有真正重算时才统计
+                    ms_cache[key_ms] = (ms_val, new_pt)
                 if tracker is not None:
                     tracker.note_ms_recomputed(simplex_id)
-
-            ms_scene.append(ms_val)
+            ms_scene.append(float(ms_val))
             xms_scene.append(new_pt)
-        # ============================================
 
+            # ---- qmin_true ----
+            key_qm = ("qmin", int(ω), key_base)
+            hit_qm = cache_on and (ms_cache is not None) and (key_qm in ms_cache)
+            if hit_qm:
+                qmin_val, _pt_true = ms_cache[key_qm]
+            else:
+                qmin_val, _lam, _pt_true = qmin_on_tetra_for_scene(
+                    qmin_bundles[ω], verts
+                )
+                if cache_on and (ms_cache is not None):
+                    ms_cache[key_qm] = (qmin_val, _pt_true)
+            qmin_scene.append(float(qmin_val))
+
+        # ---- aggregate ----
         if MS_AGG == "sum":
             ms_total = float(np.sum(ms_scene))
         elif MS_AGG == "mean":
@@ -103,8 +100,17 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
         else:
             raise ValueError("MS_AGG must be 'sum' or 'mean'")
 
-        LB = float(np.min(fverts_sum) + ms_total)
-        UB = float(np.max(fverts_sum) + ms_total)
+        # per-scene lower bounds
+        LB_old_scene = [min(fverts_per_scene[ω]) + ms_scene[ω] for ω in range(S)]
+        LB_true_scene = [max(LB_old_scene[ω], qmin_scene[ω]) for ω in range(S)]
+
+        if MS_AGG == "sum":
+            LB_true = float(np.sum(LB_true_scene))
+        else:
+            LB_true = float(np.mean(LB_true_scene))
+
+        # legacy UB（保留，不用于 active 判定，只用于展示）
+        UB_legacy = float(np.max(fverts_sum) + ms_total)
 
         best_scene = int(np.argmin(ms_scene))
         x_ms_best = xms_scene[best_scene]
@@ -113,34 +119,39 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
             "simplex_index": k,
             "vert_idx": idxs,
             "verts": verts,
-            "fverts_sum": fverts_sum,
+            "volume": vol,
+
+            # metrics
             "ms_per_scene": ms_scene,
             "xms_per_scene": xms_scene,
+            "qmin_true_scene": qmin_scene,
+            "LB_old_scene": LB_old_scene,
+            "LB_true_scene": LB_true_scene,
+
+            # new lower/upper summaries
             "ms": ms_total,
-            "LB": LB,
-            "UB": UB,
+            "LB": LB_true,          # 用新的聚合下界覆盖 LB 字段（主循环直接用它）
+            "UB": UB_legacy,
+
             "x_ms_best_scene": x_ms_best,
             "best_scene": best_scene,
-            "volume": vol,
         })
 
     return tri, per_tet
 
+
 # ------------------------- MAIN LOOP -------------------------
-def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
+def run_pid_simplex_3d(base_bundles, ms_bundles, qmin_bundles, model_list, first_vars_list,
                        target_nodes=30, min_dist=MIN_DIST, active_tol=ACTIVE_TOL, verbose=True,
                        agg_bundle=None, gap_stop_tol=GAP_STOP_TOL, tracker: SimplexTracker | None = None):
-    
+
     if tracker is None:
         tracker = SimplexTracker()
 
     """
-    Current implementation:
-        Uses only the single-scenario ms (i.e., ms_bundles).
-        For each active simplex that contains an upper-bound (UB) node,
-        candidate points are generated separately for each scenario.
-        Among all (simplex x scenario) candidates, the one with the smallest
-        ms value is selected as the next node.
+    New implementation summary:
+      - Active & global LB are computed from LB_true (see evaluate_all_tetra).
+      - Candidate generation仍沿用 ms-based 点（保持你既有选点策略不变）。
     """
     global LAST_DEBUG
     LB_hist, UB_hist, ms_hist, node_count = [], [], [], []
@@ -163,12 +174,12 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
 
     it = 0
     stop_due_to_collision = False
-    ms_cache = {}   # <== new： (scene_idx, sorted(vert_idx)) -> (ms, cand_pt)
+    ms_cache = {}   # keys: ("ms"/"qmin", scene_idx, simplex_id) -> (value, pt)
     while len(nodes) < target_nodes:
         t_iter0 = perf_counter()
         tracker.start_iter(it)
 
-        # 1) Global UB (by sum target)
+        # 1) Global UB (by sum target over nodes)
         f_sum_per_node = [
             sum(scen_values[ω][i] for ω in range(S))
             for i in range(len(nodes))
@@ -177,29 +188,19 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         UB_global = float(f_sum_per_node[ub_idx])
         UB_node = tuple(nodes[ub_idx])
 
-        # 2) Evaluate all tetrahedrons (single scene, milliseconds)
+        # 2) Evaluate all tetrahedra under new scheme
         tri, per_tet = evaluate_all_tetra(
-            nodes, scen_values, ms_bundles, first_vars_list,
-            ms_cache=ms_cache, cache_on=True, tracker=tracker  
+            nodes, scen_values, ms_bundles, qmin_bundles, first_vars_list,
+            ms_cache=ms_cache, cache_on=True, tracker=tracker
         )
         if tri is None or not per_tet:
             if verbose:
                 print("Not enough nodes to make tetrahedra; stop.")
-            tracker.end_iter()    
+            tracker.end_iter()
             break
 
-
-
-        if tri is None or not per_tet:
-            if verbose:
-                print("Not enough nodes to make tetrahedra; stop.")
-            break
-
-        # 3) active mask (Filter by UB + Shape Quality)
-        active_mask = {
-            r["simplex_index"]: (r["LB"] <= UB_global + active_tol)
-            for r in per_tet
-        }
+        # 3) active mask (LB_true vs UB + tol) + shape quality
+        active_mask = {r["simplex_index"]: (r["LB"] <= UB_global + active_tol) for r in per_tet}
         q_cut = 1e-3
         for r in per_tet:
             sid = r["simplex_index"]
@@ -209,39 +210,34 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             if q < q_cut:
                 active_mask[sid] = False
 
-        # 4) active ratio
+        # 4) active ratio & tracker
         total_vol = sum(r["volume"] for r in per_tet)
         active_vol = sum(r["volume"] for r in per_tet if active_mask[r["simplex_index"]])
         active_ratio = active_vol / total_vol if total_vol > 0 else 0.0
 
-        # —— 新增：统计 active / active+UB
         for r in per_tet:
-            is_active = active_mask.get(r["simplex_index"], False)
-            if not is_active:
+            if not active_mask.get(r["simplex_index"], False):
                 continue
             simplex_id = tuple(sorted(r["vert_idx"]))
             has_ub = (ub_idx in r["vert_idx"])
             tracker.note_active(simplex_id, has_ub=has_ub)
-
-        # —— 新增：本轮统计打印（之后即便早退，本轮统计也已输出）
         tracker.end_iter()
 
-
-        # 5) LB_global & ms_b
-        ub_active = [r for r in per_tet
-                     if (ub_idx in r["vert_idx"]) and active_mask.get(r["simplex_index"], False)]
+        # 5) Global LB from UB-neighborhood actives (delta = LB - UB)
+        ub_active = [r for r in per_tet if (ub_idx in r["vert_idx"]) and active_mask.get(r["simplex_index"], False)]
         if ub_active:
-            ms_b_rec   = min(ub_active, key=lambda r: r["ms"])
-            ms_b       = float(ms_b_rec["ms"])
-            ms_b_simp  = int(ms_b_rec["simplex_index"])
-            LB_global  = UB_global + ms_b
+            rec_b = min(ub_active, key=lambda r: (r["LB"] - UB_global))
+            delta_b = float(rec_b["LB"] - UB_global)
+            ms_b_simp = int(rec_b["simplex_index"])
+            LB_global = UB_global + delta_b
         else:
-            ms_b       = float('nan')
-            ms_b_simp  = None
-            active_LBs = [r["LB"] for r in per_tet if active_mask.get(r["simplex_index"], False)]
-            LB_global  = float(min(active_LBs)) if active_LBs else float(min(r["LB"] for r in per_tet))
+            rec_b = None
+            ms_b_simp = None
+            act_LBs = [r["LB"] for r in per_tet if active_mask.get(r["simplex_index"], False)]
+            LB_global = float(min(act_LBs)) if act_LBs else float(min(r["LB"] for r in per_tet))
+            delta_b = float(LB_global - UB_global)
 
-        # 6) ms_a
+        # 6) ms_a（沿用 ms 汇总，只作历史记录/可视化，不影响 active）
         if any(active_mask.values()):
             ms_a = float(min(r["ms"] for r in per_tet if active_mask[r["simplex_index"]]))
         else:
@@ -261,10 +257,10 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         node_count.append(len(nodes))
         UB_node_hist.append(UB_node)
         ms_a_hist.append(ms_a)
-        ms_b_hist.append(ms_b)
+        ms_b_hist.append(delta_b)   # 新口径下把“ms_b”位置记录成 delta_b
         active_ratio_hist.append(active_ratio)
 
-        # === Convergence stopping condition: Stop when UB-LB is less than the threshold ===
+        # === Convergence stopping condition ===
         if gap_stop_tol is not None and float(gap_stop_tol) > 0.0:
             gap = float(UB_global - LB_global)
             if gap <= float(gap_stop_tol):
@@ -277,15 +273,14 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         if verbose:
             print(f"[Iter {it}] Active simplex ratio = {active_ratio:.6f}")
             print(f"[Iter {it}] UB node {UB_node} is in simplices {sorted(simp_with_min)}")
-            msb_src = f"T{ms_b_simp}" if ms_b_simp is not None else "N/A"
-            print(f"[Iter {it}] LB = {LB_global:.6f} = UB({UB_global:.6f}) + ms_b({ms_b:.3e}) from {msb_src}")
+            src = f"T{ms_b_simp}" if ms_b_simp is not None else "N/A"
+            print(f"[Iter {it}] LB = {LB_global:.6f} = UB({UB_global:.6f}) + delta_b({delta_b:.3e}) from {src}")
 
-        # 9) Candidate ranking (active simplex in the UB neighborhood only × all scenarios)
+        # 9) Candidate ranking（仍使用 ms-based 候选）
         active = [r for r in per_tet if active_mask[r["simplex_index"]]]
         ub_active = [r for r in active if ub_idx in r["vert_idx"]]
         pool_records = ub_active if len(ub_active) > 0 else active
 
-        # Candidates constructed as "item = simplex × scene"
         cand_items = []
         for rec in pool_records:
             sid = rec["simplex_index"]
@@ -313,13 +308,11 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             if len(candidates_sorted) > 0:
                 t0 = candidates_sorted[0]
                 top_msg = f"T{int(t0['simplex_index'])}, scene={t0['scene']}, ms={float(t0['cand_ms']):.3e}"
-            msb_src = f"T{ms_b_simp}" if ms_b_simp is not None else "N/A"
             print(f"[Iter {it}] candidate rank #1: {top_msg}")
-
             _print_candidates_table(candidates_sorted, nodes, topN=10)
             print()
 
-        # 10) Select new point + strong verification/collision handling
+        # 10) Select new point + collision handling
         new_node = None
         chosen_ms = None
         chosen_cand = None
@@ -425,7 +418,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                     })
             for ci in sorted(cand_items_all, key=score_item):
                 cand_pt = ci["cand_pt"]
-                if cand_pt is None: 
+                if cand_pt is None:
                     continue
                 if min_dist_to_nodes(cand_pt, nodes) >= min_dist:
                     new_node   = cand_pt
@@ -502,7 +495,8 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                         {
                             "simplex_index": int(r["simplex_index"]),
                             "vert_idx": list(map(int, r["vert_idx"])),
-                            "verts": [tuple(map(float, x)) for x in r["verts"]],
+                            "verts": [tuple(map(float, x)) for x in r["verts"]]
+                            ,
                             "ms": float(r["ms"]),
                             "ms_per_scene": [float(x) for x in r.get("ms_per_scene", [])],
                             "LB": float(r["LB"]),
@@ -551,7 +545,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         "UB_hist": UB_hist,
         "ms_hist": ms_hist,
         "ms_a_hist": ms_a_hist,
-        "ms_b_hist": ms_b_hist,
+        "ms_b_hist": ms_b_hist,  # 现在存 delta_b
         "node_count": node_count,
         "UB_node_hist": UB_node_hist,
         "added_nodes": add_node_hist,

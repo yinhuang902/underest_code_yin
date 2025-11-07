@@ -22,7 +22,7 @@ def ms_on_tetra_for_scene(ms_bundle, tet_vertices, fverts_scene):
 
 # ------------------------- Evaluate all tetrahedra (per-scene) -------------------------
 def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
-                       ms_cache=None, cache_on=True, tracker=None):
+                       ms_cache=None, cache_on=True):
     """
     Returns:
         per_tet[k]: a dictionary containing:
@@ -64,12 +64,6 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
         if vol < vol_tol:
             continue
 
-        # —— 这里新增：用顶点索引的有序元组作为单形唯一 id
-        simplex_id = tuple(sorted(idxs))
-        if tracker is not None:
-            tracker.note_created(simplex_id)
-
-
         fverts_per_scene = [[scen_values[ω][i] for i in idxs] for ω in range(S)]
         fverts_sum = [sum(fverts_per_scene[ω][j] for ω in range(S)) for j in range(4)]
 
@@ -88,10 +82,6 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
                 )
                 if cache_on and (ms_cache is not None):
                     ms_cache[cache_key] = (ms_val, new_pt)
-                # —— 这里新增：只有真正重算时才统计
-                if tracker is not None:
-                    tracker.note_ms_recomputed(simplex_id)
-
             ms_scene.append(ms_val)
             xms_scene.append(new_pt)
         # ============================================
@@ -129,11 +119,7 @@ def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
 # ------------------------- MAIN LOOP -------------------------
 def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                        target_nodes=30, min_dist=MIN_DIST, active_tol=ACTIVE_TOL, verbose=True,
-                       agg_bundle=None, gap_stop_tol=GAP_STOP_TOL, tracker: SimplexTracker | None = None):
-    
-    if tracker is None:
-        tracker = SimplexTracker()
-
+                       agg_bundle=None, gap_stop_tol=GAP_STOP_TOL):
     """
     Current implementation:
         Uses only the single-scenario ms (i.e., ms_bundles).
@@ -166,8 +152,6 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
     ms_cache = {}   # <== new： (scene_idx, sorted(vert_idx)) -> (ms, cand_pt)
     while len(nodes) < target_nodes:
         t_iter0 = perf_counter()
-        tracker.start_iter(it)
-
         # 1) Global UB (by sum target)
         f_sum_per_node = [
             sum(scen_values[ω][i] for ω in range(S))
@@ -180,15 +164,8 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         # 2) Evaluate all tetrahedrons (single scene, milliseconds)
         tri, per_tet = evaluate_all_tetra(
             nodes, scen_values, ms_bundles, first_vars_list,
-            ms_cache=ms_cache, cache_on=True, tracker=tracker  
+            ms_cache=ms_cache, cache_on=True
         )
-        if tri is None or not per_tet:
-            if verbose:
-                print("Not enough nodes to make tetrahedra; stop.")
-            tracker.end_iter()    
-            break
-
-
 
         if tri is None or not per_tet:
             if verbose:
@@ -213,19 +190,6 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         total_vol = sum(r["volume"] for r in per_tet)
         active_vol = sum(r["volume"] for r in per_tet if active_mask[r["simplex_index"]])
         active_ratio = active_vol / total_vol if total_vol > 0 else 0.0
-
-        # —— 新增：统计 active / active+UB
-        for r in per_tet:
-            is_active = active_mask.get(r["simplex_index"], False)
-            if not is_active:
-                continue
-            simplex_id = tuple(sorted(r["vert_idx"]))
-            has_ub = (ub_idx in r["vert_idx"])
-            tracker.note_active(simplex_id, has_ub=has_ub)
-
-        # —— 新增：本轮统计打印（之后即便早退，本轮统计也已输出）
-        tracker.end_iter()
-
 
         # 5) LB_global & ms_b
         ub_active = [r for r in per_tet
@@ -314,6 +278,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                 t0 = candidates_sorted[0]
                 top_msg = f"T{int(t0['simplex_index'])}, scene={t0['scene']}, ms={float(t0['cand_ms']):.3e}"
             msb_src = f"T{ms_b_simp}" if ms_b_simp is not None else "N/A"
+            print(f"[Iter {it}] LB = {LB_global:.6f} = UB({UB_global:.6f}) + ms_b({ms_b:.3e}) from {msb_src}")
             print(f"[Iter {it}] candidate rank #1: {top_msg}")
 
             _print_candidates_table(candidates_sorted, nodes, topN=10)
