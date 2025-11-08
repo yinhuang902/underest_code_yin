@@ -6,24 +6,18 @@ from pyomo.opt import SolverStatus, TerminationCondition
 
 class BaseBundle:
     """
-    Base bundle for a single scenario: holds a Pyomo model that evaluates the
-    true objective (Q) at given first-stage values, backed by a persistent
-    Gurobi solver for fast resolves.
-
-    This wrapper:
-      1) Installs a standard Pyomo Objective component from `model.obj_expr`
-         (replacing any pre-existing `model.obj`), and
-      2) Binds the model to `GurobiPersistent` so variables/constraints/objective
-         updates do not rebuild the entire model each time.
+    Base bundle for a single scenario: holds a Pyomo model to evaluate the
+    true objective (Qs) at given first-stage values. This class does not 
+    alter constraints or variable domains, it only installs the objective
+    to make solve efficiently.
 
     Parameters
     ----------
     model : pyo.ConcreteModel
-        A fully specified Pyomo model that exposes an expression `model.obj_expr`
-        to be minimized. If an `obj` component already exists it will be removed
-        and replaced to ensure consistency with the persistent solver.
+        The model will contain `model.obj_expr`. If an `obj` component already 
+        exists it will be removed and replaced.
     options : dict | None, optional
-        Gurobi parameters to set on the persistent solver. Recognized keys:
+        Gurobi parameters to set on the persistent solver:
         - 'MIPGap' (float, default 1e-1)
         - 'NumericFocus' (int {0..3}, default 1)
         - 'Presolve' (int, default 2)
@@ -33,7 +27,7 @@ class BaseBundle:
     Attributes
     ----------
     model : pyo.ConcreteModel
-        The bound (and possibly lightly modified) Pyomo model.
+        The Pyomo model.
     gp : GurobiPersistent
         The persistent solver instance bound to `model`.
 
@@ -43,13 +37,6 @@ class BaseBundle:
         Fixes the provided first-stage variables to `first_vals`, solves the
         model, reads the objective value at `model.obj_expr`, and then unfixes
         the variables. Returns the scalar objective value.
-
-    Notes
-    -----
-    - `eval_at` uses `gp.update_var(v)` after fixing/unfixing to keep the
-      persistent model in sync without triggering a full rebuild.
-    - This class does not alter constraints or variable domains; it only
-      installs the objective and manages re-solves efficiently.
     """
     def __init__(self, model: pyo.ConcreteModel, options: dict | None = None):
         self.model = model
@@ -80,14 +67,14 @@ class BaseBundle:
 
 class MSBundle:
     """
-    Single-scenario MS subproblem (persistent): solves the tetrahedral
+    Single-scenario ms subproblem: solves the single scenario simplex ms
     subproblem using a fixed-structure formulation with barycentric weights.
-    Coefficients in the linking constraints are updated in-place (matrix edits)
-    to avoid rebuild overhead.
+    We fix the form of the linking constraints. Every time we just adjust the
+    coefficients to avoid rebuild.
 
     Problem sketch
     --------------
-    - Introduce barycentric weights `lam[j]` (j=0..3), sum to 1, lam[j] >= 0.
+    - Barycentric weights `lam[j]` (j=0..3), sum to 1, lam[j] >= 0.
     - Link first-stage variables (Kp, Ki, Kd) to the convex combination of the
       4 vertices of a tetrahedron via linear constraints:
           Kp - sum(x_j * lam[j]) = 0,
@@ -97,24 +84,19 @@ class MSBundle:
           As - sum(f_j * lam[j]) = 0.
     - Objective:
           minimize  model.obj_expr - As
-      which encourages selecting a point whose scenario objective is small
-      relative to the convex combination of vertex values.
 
     Parameters
     ----------
     model_base : pyo.ConcreteModel
         A base model that exposes:
-          - first-stage variables present by name (e.g., Kp, Ki, Kd),
+          - first-stage variables (Kp, Ki, Kd),
           - an expression `obj_expr` to minimize.
-        This model is cloned internally so the MS subproblem can alter
+        This model is cloned internally so the ms subproblem can alter
         constraints/objective without touching the original.
     first_vars : Sequence[pyo.Var]
         A 3-tuple/list of the first-stage variables (Kp, Ki, Kd) from
         `model_base`. Their **names** are used to locate the counterparts in
         the cloned model (via `find_component`).
-    options : dict | None, optional
-        Gurobi parameters for the persistent solver. Recognized keys:
-        'MIPGap', 'NumericFocus', 'Presolve', 'NonConvex', 'TimeLimit'.
 
     Attributes
     ----------
@@ -137,23 +119,15 @@ class MSBundle:
     Methods
     -------
     update_tetra(tet_vertices, fverts_scene) -> None
-        Update the in-place coefficients of the linking constraints to reflect
-        the current tetrahedron geometry and vertex function values for THIS
-        SCENE. This avoids rebuilding constraints.
+        Update the coefficients of the linking constraints to reflect
+        the current tetrahedron geometry and vertex function values. 
+        This avoids rebuilding constraints.
     solve() -> bool
         Solve the current subproblem; returns True if the solve ended with an
         optimal or locally optimal termination condition.
     get_ms_and_point() -> tuple[float, np.ndarray, tuple[float, float, float]]
-        Read the scalar ms value (objective), the optimal barycentric weights,
+        Read the scalar ms value, the optimal barycentric weights,
         and the corresponding Cartesian point (Kp,Ki,Kd).
-
-    Notes
-    -----
-    - Coefficients are updated directly on the underlying Gurobi model using
-      `chgCoeff` via the persistent solver's internal maps. This is more robust
-      across Pyomo versions that may not expose `set_linear_coefficients`.
-    - The class is intentionally single-scenario: instantiate one `MSBundle`
-      per scenario, then feed scenario-specific vertex values to `update_tetra`.
     """
     def __init__(self, model_base: pyo.ConcreteModel, first_vars, options: dict | None = None):
         m = model_base.clone()

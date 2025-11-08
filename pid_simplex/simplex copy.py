@@ -24,24 +24,50 @@ def ms_on_tetra_for_scene(ms_bundle, tet_vertices, fverts_scene):
 def evaluate_all_tetra(nodes, scen_values, ms_bundles, first_vars_list,
                        ms_cache=None, cache_on=True):
     """
-    Returns:
-        per_tet[k]: a dictionary containing:
-            - ms_per_scene: list of length S
-                ms values for each scene.
-            - xms_per_scene: list of length S
-                first stage variable (Kp, Ki, Kd) for the corresponding ms for each scene.
-            - x_ms_best_scene:
-                first stage variable (Kp, Ki, Kd) for the corresponding best ms.
-            - best_scene:
-                index of the best scene(minimum ms)
+    Parameters
+    ----------
+    nodes : list[tuple[float]]
+        Current list of first-stage nodes.
+    scen_values : list[list[float]]
+        True Qs value at each node.
+        Shape: [num_scenarios][num_nodes].
+    ms_bundles : list[MSBundle]
+        Persistent solver wrappers for the per-scenario ms subproblems.
+    first_vars_list : list[list[pyo.Var]]
+        Lists of first-stage Pyomo variables for each scenario.
+    ms_cache : dict, optional
+        Cache dictionary to avoid recalculating ms.
+        Keys: (scene_idx, tuple(sorted(vertex_indices)))
+        Values: (ms_value, candidate_point)
+    cache_on : bool, default=True
+        Whether to enable caching during evaluation.
 
-    Notes:
-        ms_cache (dict, optional):
-            A cache dictionary with keys of the form
-            (scene_idx, tuple(sorted(vert_idx))),
-            and values as (ms_val, new_point).
-        cache_on (bool):
-            Whether to enable caching to avoid redundant evaluations.
+    Returns
+    -------
+    tri : scipy.spatial.Delaunay
+        The simplex set of the current node set.
+    per_tet : list[dict]
+        List of per-simplex results. Each dictionary includes:
+            - simplex_index : int
+                Index of the tetrahedron in the triangulation.
+            - vert_idx : list[int]
+                Indices of its 4 vertices in `nodes`.
+            - verts : list[tuple[float]]
+                The vertex coordinates.
+            - ms_per_scene : list[float]
+                ms values for each scenario.
+            - xms_per_scene : list[tuple[float]]
+                Candidate (Kp, Ki, Kd) point corresponding to each ms_per_scene.
+            - ms : float
+                Aggregated ms value (sum or mean across scenarios).
+            - LB, UB : float
+                Lower and upper bounds for this simplex.
+            - best_scene : int
+                Index of the scenario achieving the smallest ms.
+            - x_ms_best_scene : tuple[float]
+                The candidate point for the best scenario.
+            - volume : float
+                Tetrahedron volume (degenerate simplices are skipped).
     """
     pts = np.asarray(nodes, dtype=float)
     if len(pts) < 4:
@@ -121,13 +147,58 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                        target_nodes=30, min_dist=MIN_DIST, active_tol=ACTIVE_TOL, verbose=True,
                        agg_bundle=None, gap_stop_tol=GAP_STOP_TOL):
     """
-    Current implementation:
-        Uses only the single-scenario ms (i.e., ms_bundles).
-        For each active simplex that contains an upper-bound (UB) node,
-        candidate points are generated separately for each scenario.
-        Among all (simplex x scenario) candidates, the one with the smallest
-        ms value is selected as the next node.
+    Starting from the 8 corner nodes, the algorithm iteratively:
+      (1) computes a global UB from existing nodes,
+      (2) evaluates all simplex via per-scenario ms subproblems,
+      (3) marks "active" simplex near the current UB (and filters by shape quality, some are too small),
+      (4) computes a global LB using the best active simplex near the UB node,
+      (5) tracks the best ms value among active simplices (ms_a),
+      (6) records iteration traces (UB/LB/ms/nodes/ratios),
+      (7) prints a summary (if verbose),
+      (8) builds and ranks candidate points (simplex x scenario) by (ms, distance),
+     (9) selects the next node subject to a minimum-distance constraint; handles
+          collisions; visualizes; evaluates Q at the new node; and updates state.
+
+    Inputs
+    ------
+    base_bundles : list[BaseBundle]
+        Scenario models for evaluating true objectives Q_ω at fixed (Kp, Ki, Kd).
+    ms_bundles : list[MSBundle]
+        Single scenario persistent MS solvers.
+    model_list : list[pyo.ConcreteModel]
+        Original Pyomo models for single scenario.
+    first_vars_list : list[list[pyo.Var]]
+        First-stage variables (Kp, Ki, Kd) per scenario.
+    target_nodes : int
+        Stop after this many total nodes (including the 8 corners).
+    min_dist : float
+        Minimum distance required between any two nodes.
+    active_tol : float
+        Relaxation tolerance for the active-set test: LB_k ≤ UB_global + active_tol.
+    verbose : bool
+        Print iteration diagnostics and candidate tables, also triggers Plotly 3D visualization.
+    agg_bundle : Any
+        Reserved for future aggregated-MS extensions (unused in this implementation).
+    gap_stop_tol : float
+        Convergence threshold on the absolute optimality gap (UB - LB).
+
+    Returns
+    -------
+    dict
+        {
+          "nodes": np.ndarray,               # all sampled PID nodes (including corners)
+          "LB_hist": list[float],            # LB per iteration
+          "UB_hist": list[float],            # UB per iteration
+          "ms_hist": list[float],            # ms_a per iteration
+          "ms_a_hist": list[float],          # alias of ms_hist
+          "ms_b_hist": list[float],          # ms_b (from UB-neighborhood) per iteration
+          "node_count": list[int],           # node count trajectory
+          "UB_node_hist": list[tuple],       # UB node per iteration
+          "added_nodes": list[tuple],        # newly added nodes
+          "active_ratio_hist": list[float],  # active volume ratio per iteration
+        }
     """
+
     global LAST_DEBUG
     LB_hist, UB_hist, ms_hist, node_count = [], [], [], []
     UB_node_hist, add_node_hist = [], []
@@ -149,10 +220,10 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
 
     it = 0
     stop_due_to_collision = False
-    ms_cache = {}   # <== new： (scene_idx, sorted(vert_idx)) -> (ms, cand_pt)
+    ms_cache = {}   # <== (scene_idx, sorted(vert_idx)) -> (ms, cand_pt)
     while len(nodes) < target_nodes:
         t_iter0 = perf_counter()
-        # 1) Global UB (by sum target)
+        # 1) Global UB
         f_sum_per_node = [
             sum(scen_values[ω][i] for ω in range(S))
             for i in range(len(nodes))
@@ -161,7 +232,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
         UB_global = float(f_sum_per_node[ub_idx])
         UB_node = tuple(nodes[ub_idx])
 
-        # 2) Evaluate all tetrahedrons (single scene, milliseconds)
+        # 2) Evaluate all simplex (single scene)
         tri, per_tet = evaluate_all_tetra(
             nodes, scen_values, ms_bundles, first_vars_list,
             ms_cache=ms_cache, cache_on=True
@@ -186,7 +257,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             if q < q_cut:
                 active_mask[sid] = False
 
-        # 4) active ratio
+        # 4) active simplex volume ratio
         total_vol = sum(r["volume"] for r in per_tet)
         active_vol = sum(r["volume"] for r in per_tet if active_mask[r["simplex_index"]])
         active_ratio = active_vol / total_vol if total_vol > 0 else 0.0
@@ -284,7 +355,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             _print_candidates_table(candidates_sorted, nodes, topN=10)
             print()
 
-        # 10) Select new point + strong verification/collision handling
+        # 10) Select new point + strong collision handling
         new_node = None
         chosen_ms = None
         chosen_cand = None
@@ -423,7 +494,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
                 print("New node too close for all candidates (or infeasible ms); stop.")
             break
 
-        # == Strong validation: Avoid next_node equal to vertex ==
+        # == Avoid next_node equal to vertex ==
         tol_same = 1e-10
         def _same(a, b, tol=tol_same):
             a = np.asarray(a, float); b = np.asarray(b, float)

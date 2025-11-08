@@ -271,7 +271,7 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
             r["simplex_index"]: (r["LB"] <= UB_global + active_tol)
             for r in per_tet
         }
-        q_cut = 1e-3
+        q_cut = 1e-6
         for r in per_tet:
             sid = r["simplex_index"]
             if not active_mask.get(sid, False):
@@ -337,8 +337,8 @@ def run_pid_simplex_3d(base_bundles, ms_bundles, model_list, first_vars_list,
 
         # === Convergence stopping condition: Stop when UB-LB is less than the threshold ===
         if gap_stop_tol is not None and float(gap_stop_tol) > 0.0:
-            gap = float(UB_global - LB_global)
-            if gap <= float(gap_stop_tol):
+            gap_rel = float(UB_global - LB_global) / (abs(UB_global) + 1e-16)
+            if gap_rel <= float(gap_stop_tol):
                 if verbose:
                     print(f"[Iter {it}] Stop: UB-LB gap {gap:.6e} <= tol {float(gap_stop_tol):.6e}.")
                 break
